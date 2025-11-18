@@ -39,10 +39,20 @@ else:
 DATA_DIR = os.path.join(BASE_DIR, "arc_data")
 SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
 
-MODULES_URL  = "https://raw.githubusercontent.com/RaidTheory/arcraiders-data/main/hideoutModules.json"
 PROJECTS_URL = "https://raw.githubusercontent.com/RaidTheory/arcraiders-data/main/projects.json"
-MODULES_PATH = os.path.join(DATA_DIR, "hideoutModules.json")
 PROJECTS_PATH = os.path.join(DATA_DIR, "projects.json")
+HIDEOUT_FILES = (
+    "equipment_bench",
+    "explosives_bench",
+    "med_station",
+    "refiner",
+    "scrappy",
+    "stash",
+    "utility_bench",
+    "weapon_bench",
+    "workbench",
+)
+HIDEOUT_RAW_BASE = "https://raw.githubusercontent.com/RaidTheory/arcraiders-data/main/hideout"
 
 # ------------------ Tuning ------------------
 FUZZY_THRESHOLD = 70
@@ -60,6 +70,7 @@ NameToLines    = {}   # "Cat Bed" -> ["❌ Cat Bed", "• Scrappy 4 – ×1", ""
 ModulesMeta    = []   # [{"name": <str>, "maxLevel": <int>}]
 ProjectsMeta   = []   # [{"name": <str>, "maxStage": <int>}]
 Settings       = {"workstations": {}, "projects": {}}
+ModulesData    = []   # cached hideout modules downloaded at startup
 
 # ------------------ Utilities ------------------
 def ensure_dir():
@@ -74,8 +85,27 @@ def download(url, path):
 def refresh_data_startup():
     """Always refresh both JSONs at app startup."""
     ensure_dir()
-    download(MODULES_URL, MODULES_PATH)
+    refresh_modules_data()
     download(PROJECTS_URL, PROJECTS_PATH)
+
+def refresh_modules_data():
+    """Download all hideout modules (one JSON per module) and cache them."""
+    global ModulesData
+    ModulesData = download_split_hideout_modules()
+
+def download_split_hideout_modules():
+    modules = []
+    for name in HIDEOUT_FILES:
+        url = f"{HIDEOUT_RAW_BASE}/{name}.json"
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+        try:
+            modules.append(resp.json())
+        except Exception as e:
+            raise RuntimeError(f"Failed to parse hideout module {name}.json") from e
+    if not modules:
+        raise RuntimeError("No hideout module files were downloaded.")
+    return modules
 
 def load_json(path):
     with open(path, "r", encoding="utf-8") as f:
@@ -138,7 +168,7 @@ def build_indexes_from_local():
     ModulesMeta = []
     ProjectsMeta = []
 
-    modules = load_json(MODULES_PATH)
+    modules = ModulesData if isinstance(ModulesData, list) else []
     projects = load_json(PROJECTS_PATH)
 
     # Workstations
