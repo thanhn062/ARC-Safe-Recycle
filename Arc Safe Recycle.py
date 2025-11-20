@@ -53,6 +53,7 @@ HIDEOUT_FILES = (
     "workbench",
 )
 HIDEOUT_RAW_BASE = "https://raw.githubusercontent.com/RaidTheory/arcraiders-data/main/hideout"
+StopEvent = threading.Event()
 
 # ------------------ Tuning ------------------
 FUZZY_THRESHOLD = 70
@@ -486,8 +487,17 @@ def create_tray(ui: SearchUI):
         SettingsWin(ui)
 
     def on_quit(icon, item):
-        icon.stop()
-        ui.quit()
+        # Run Tk shutdown from the Tk thread; also clear hotkeys to let the
+        # keyboard helper threads exit cleanly.
+        try:
+            StopEvent.set()
+            keyboard.unhook_all_hotkeys()
+            keyboard.unhook_all()
+        except Exception:
+            pass
+        ui.after(0, ui.destroy)
+        # Stop the tray loop on its own thread to avoid blocking the menu callback.
+        threading.Thread(target=icon.stop, daemon=True).start()
 
     menu = pystray.Menu(
         pystray.MenuItem("Show", on_show),
@@ -504,7 +514,7 @@ def hotkey_loop(ui: SearchUI):
     # Ctrl+F => show if ARC Raiders is active
     keyboard.add_hotkey("ctrl+f", lambda: maybe_show(ui))
     keyboard.add_hotkey("escape", lambda: ui.hide())
-    while True:
+    while not StopEvent.is_set():
         time.sleep(0.2)
 
 # ------------------ Main ------------------
