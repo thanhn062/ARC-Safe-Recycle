@@ -41,9 +41,12 @@ SETTINGS_PATH = os.path.join(BASE_DIR, "settings.json")
 # Cache directory for downloaded data (keeps memory low; reuse between runs)
 DATA_DIR = os.path.join(BASE_DIR, "arc_data")
 HIDEOUT_DIR = os.path.join(DATA_DIR, "hideout")
+QUESTS_DIR = os.path.join(DATA_DIR, "quests")
 PROJECTS_PATH = os.path.join(DATA_DIR, "projects.json")
 
 PROJECTS_URL = "https://raw.githubusercontent.com/RaidTheory/arcraiders-data/main/projects.json"
+QUESTS_RAW_BASE = "https://raw.githubusercontent.com/RaidTheory/arcraiders-data/main/quests"
+QUESTS_API_URL = "https://api.github.com/repos/RaidTheory/arcraiders-data/contents/quests"
 HIDEOUT_FILES = (
     "equipment_bench",
     "explosives_bench",
@@ -73,7 +76,8 @@ NameToLines    = {}   # "Cat Bed" -> ["❌ Cat Bed", "• Scrappy 4 – ×1", ""
 
 ModulesMeta    = []   # [{"name": <str>, "maxLevel": <int>}]
 ProjectsMeta   = []   # [{"name": <str>, "maxStage": <int>}]
-Settings       = {"workstations": {}, "projects": {}}
+Settings       = {"workstations": {}, "projects": {}, "quests": {}}
+QuestsMeta     = []   # [{"id": str, "name": str}]
 
 # ------------------ Utilities ------------------
 def ensure_dir():
@@ -85,6 +89,7 @@ def ensure_dir():
 def ensure_data_dirs():
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(HIDEOUT_DIR, exist_ok=True)
+    os.makedirs(QUESTS_DIR, exist_ok=True)
 
 def refresh_data_startup():
     """
@@ -94,7 +99,8 @@ def refresh_data_startup():
     ensure_data_dirs()
     modules = ensure_hideout_cached()
     projects = ensure_projects_cached()
-    return modules, projects
+    quests = ensure_quests_cached()
+    return modules, projects, quests
 
 def ensure_projects_cached():
     if not os.path.exists(PROJECTS_PATH):
@@ -125,6 +131,28 @@ def ensure_hideout_cached():
         modules = [load_json(os.path.join(HIDEOUT_DIR, f"{name}.json")) for name in HIDEOUT_FILES]
     return modules
 
+def ensure_quests_cached():
+    manifest = download_quests_manifest()
+    quests = []
+    missing = []
+    for fname in manifest:
+        path = os.path.join(QUESTS_DIR, fname)
+        if os.path.exists(path):
+            try:
+                quests.append(load_json(path))
+                continue
+            except Exception:
+                missing.append(fname)
+        else:
+            missing.append(fname)
+
+    if missing:
+        download_quests(manifest)
+        quests = []
+        for fname in manifest:
+            quests.append(load_json(os.path.join(QUESTS_DIR, fname)))
+    return quests
+
 def download_projects_json(save_to_disk=False):
     resp = requests.get(PROJECTS_URL, timeout=30)
     resp.raise_for_status()
@@ -154,6 +182,33 @@ def download_split_hideout_modules(save_to_disk=False):
     if not modules:
         raise RuntimeError("No hideout module files were downloaded.")
     return modules
+
+def download_quests_manifest():
+    resp = requests.get(QUESTS_API_URL, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+    files = []
+    for entry in data:
+        if isinstance(entry, dict) and entry.get("type") == "file":
+            name = entry.get("name", "")
+            if name.endswith(".json"):
+                files.append(name)
+    if not files:
+        raise RuntimeError("Quest manifest is empty")
+    return files
+
+def download_quests(manifest):
+    errors = []
+    for fname in manifest:
+        url = f"{QUESTS_RAW_BASE}/{fname}"
+        try:
+            resp = requests.get(url, timeout=30)
+            resp.raise_for_status()
+            save_json(os.path.join(QUESTS_DIR, fname), resp.json())
+        except Exception as e:
+            errors.append(f"{fname} ({e})")
+    if errors:
+        raise RuntimeError("Failed to download quests: " + ", ".join(errors))
 
 def load_json(path):
     with open(path, "r", encoding="utf-8") as f:
@@ -201,9 +256,10 @@ def load_settings():
         try:
             Settings = load_json(SETTINGS_PATH)
         except Exception:
-            Settings = {"workstations": {}, "projects": {}}
+            Settings = {"workstations": {}, "projects": {}, "quests": {}}
     if "workstations" not in Settings: Settings["workstations"] = {}
     if "projects" not in Settings: Settings["projects"] = {}
+    if "quests" not in Settings: Settings["quests"] = {}
     # ensure Expedition Phase key exists
     Settings["projects"].setdefault(EXPEDITION_PROJECT_KEY, 0)
 
@@ -211,13 +267,14 @@ def save_settings():
     save_json(SETTINGS_PATH, Settings)
 
 # ------------------ Index build (applies Settings) ------------------
-def build_indexes_from_local(modules, projects):
-    global ItemIdToUsages, AllItemNames, NameToLines, ModulesMeta, ProjectsMeta
+def build_indexes_from_local(modules, projects, quests):
+    global ItemIdToUsages, AllItemNames, NameToLines, ModulesMeta, ProjectsMeta, QuestsMeta
     ItemIdToUsages = {}
     AllItemNames = []
     NameToLines = {}
     ModulesMeta = []
     ProjectsMeta = []
+    QuestsMeta = []
 
     # Workstations
     if isinstance(modules, list):
@@ -242,6 +299,9 @@ def build_indexes_from_local(modules, projects):
     # Expedition phases (single spinner): exclude phases <= selected; include > selected
     max_phase = _add_expedition_phases(projects)
     ProjectsMeta.append({"name": "Expedition Phase", "maxStage": max_phase})
+
+    # Quest requirements (exclude if quest is marked completed)
+    _add_quests(quests)
 
     # Preformat NameToLines (human names)
     for item_id, uses in ItemIdToUsages.items():
@@ -298,6 +358,23 @@ def _add_expedition_phases(projects) -> int:
                 _add_usage(iid, label, qty)
 
     return max_phase
+
+def _add_quests(quests):
+    completed = Settings.get("quests", {})
+    for quest in quests or []:
+        qid = str(quest.get("id") or "").strip()
+        qname = pick_en_name(quest.get("name"))
+        if not qid:
+            continue
+        QuestsMeta.append({"id": qid, "name": qname})
+        if completed.get(qid):
+            continue  # skip requirements for completed quests
+        for req in (quest.get("requiredItemIds") or []):
+            item_id = str(req.get("itemId") or "").strip()
+            if not item_id:
+                continue
+            qty = get_qty(req)
+            _add_usage(item_id, f"Quest – {qname}", qty)
 
 # ------------------ Fuzzy scoring ------------------
 def levenshtein(a: str, b: str) -> int:
@@ -424,27 +501,39 @@ class SettingsWin(tk.Toplevel):
     def __init__(self, master: 'SearchUI'):
         super().__init__(master)
         self.title("Settings – Your Progress")
-        self.geometry("250x380")
-        self.minsize(250, 380)
+        self.geometry("320x420")
+        self.minsize(320, 420)
         self.transient(master)
         self.grab_set()
 
         root = ttk.Frame(self)
         root.pack(fill="both", expand=True, padx=10, pady=10)
 
+        nb = ttk.Notebook(root)
+        nb.pack(fill="both", expand=True)
+
+        ws_tab = ttk.Frame(nb)
+        ph_tab = ttk.Frame(nb)
+        quests_tab = ttk.Frame(nb)
+        nb.add(ws_tab, text="Workstations")
+        nb.add(ph_tab, text="Expedition")
+        nb.add(quests_tab, text="Quests")
+
         # --- Workstations ---
-        ttk.Label(root, text="Workstations", font=("Segoe UI", 11, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 6))
-        self.ws_frame = ttk.Frame(root)
+        ttk.Label(ws_tab, text="Workstations", font=("Segoe UI", 11, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 6))
+        self.ws_frame = ttk.Frame(ws_tab)
         self.ws_frame.grid(row=1, column=0, sticky="ew")
         self._build_ws_rows()
 
-        ttk.Separator(root, orient="horizontal").grid(row=2, column=0, sticky="ew", pady=10)
-
         # --- Expedition Phase (spinner with arrows) ---
-        ttk.Label(root, text="Expedition – Phase", font=("Segoe UI", 11, "bold")).grid(row=3, column=0, sticky="w", pady=(0, 6))
-        self.pr_frame = ttk.Frame(root)
-        self.pr_frame.grid(row=4, column=0, sticky="ew")
+        ttk.Label(ph_tab, text="Expedition – Phase", font=("Segoe UI", 11, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 6))
+        self.pr_frame = ttk.Frame(ph_tab)
+        self.pr_frame.grid(row=1, column=0, sticky="ew")
         self._build_phase_row()
+
+        # --- Quests ---
+        ttk.Label(quests_tab, text="Quest Progress", font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=(0, 6))
+        self._build_quest_area(quests_tab)
 
         self.bind("<Escape>", lambda e: self.destroy())
 
@@ -497,13 +586,37 @@ class SettingsWin(tk.Toplevel):
         current = int(Settings["projects"].get(EXPEDITION_PROJECT_KEY, 0))
         self._spin(f, 0, "Phase", max_phase, current, self._on_phase_changed)
 
+    def _build_quest_area(self, parent):
+        container = ttk.Frame(parent)
+        container.pack(fill="both", expand=True)
+
+        canvas = tk.Canvas(container, highlightthickness=0)
+        vsb = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        inner = ttk.Frame(canvas)
+        win_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+        def _on_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfigure(win_id, width=canvas.winfo_width())
+
+        inner.bind("<Configure>", _on_configure)
+        canvas.bind("<Configure>", _on_configure)
+
+        self.quest_canvas = canvas
+        self.quest_frame = inner
+        self._build_quest_rows()
+
     def _on_ws_changed(self, name, val):
         Settings["workstations"][name] = int(val)
         save_settings()
         try:
-            modules, projects = refresh_data_startup()
-            build_indexes_from_local(modules, projects)
-            modules = projects = None
+            modules, projects, quests = refresh_data_startup()
+            build_indexes_from_local(modules, projects, quests)
+            modules = projects = quests = None
             self.master.on_type()
         except Exception as e:
             messagebox.showerror("Refresh error", f"Could not refresh data:\n{e}")
@@ -512,9 +625,46 @@ class SettingsWin(tk.Toplevel):
         Settings["projects"][EXPEDITION_PROJECT_KEY] = int(val)
         save_settings()
         try:
-            modules, projects = refresh_data_startup()
-            build_indexes_from_local(modules, projects)
-            modules = projects = None
+            modules, projects, quests = refresh_data_startup()
+            build_indexes_from_local(modules, projects, quests)
+            modules = projects = quests = None
+            self.master.on_type()
+        except Exception as e:
+            messagebox.showerror("Refresh error", f"Could not refresh data:\n{e}")
+
+    def _build_quest_rows(self):
+        f = getattr(self, "quest_frame", None)
+        if not f:
+            return
+        for w in f.grid_slaves():
+            w.destroy()
+        self.quest_vars = {}
+
+        if not QuestsMeta:
+            ttk.Label(f, text="No quest data loaded yet.", foreground="#888").grid(row=0, column=0, sticky="w", padx=4, pady=4)
+            return
+
+        quests_sorted = sorted(QuestsMeta, key=lambda m: m.get("name", ""))
+        cols = 2
+        for idx, meta in enumerate(quests_sorted):
+            rid = meta.get("id", "")
+            nm = meta.get("name", rid)
+            var = tk.BooleanVar(value=bool(Settings.get("quests", {}).get(rid, False)))
+            cb = ttk.Checkbutton(f, text=nm, variable=var, command=lambda qid=rid, v=var: self._on_quest_toggle(qid, v.get()))
+            r = idx // cols
+            c = idx % cols
+            cb.grid(row=r, column=c, sticky="w", padx=6, pady=3)
+            self.quest_vars[rid] = var
+        for c in range(cols):
+            f.columnconfigure(c, weight=1)
+
+    def _on_quest_toggle(self, quest_id: str, checked: bool):
+        Settings.setdefault("quests", {})[quest_id] = bool(checked)
+        save_settings()
+        try:
+            modules, projects, quests = refresh_data_startup()
+            build_indexes_from_local(modules, projects, quests)
+            modules = projects = quests = None
             self.master.on_type()
         except Exception as e:
             messagebox.showerror("Refresh error", f"Could not refresh data:\n{e}")
@@ -578,7 +728,7 @@ def hotkey_loop(ui: SearchUI):
 def main():
     # Always refresh JSON on startup (live content), then offline
     try:
-        modules, projects = refresh_data_startup()
+        modules, projects, quests = refresh_data_startup()
     except Exception as e:
         tk.Tk().withdraw()
         messagebox.showerror("Startup error", f"Could not download data:\n{e}")
@@ -587,9 +737,8 @@ def main():
     load_settings()
 
     try:
-        build_indexes_from_local(modules, projects)
-        modules = None
-        projects = None
+        build_indexes_from_local(modules, projects, quests)
+        modules = projects = quests = None
     except Exception as e:
         tk.Tk().withdraw()
         messagebox.showerror("Index error", f"Failed to build indexes:\n{e}")
