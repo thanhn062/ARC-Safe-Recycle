@@ -35,12 +35,15 @@ if getattr(sys, "frozen", False):
 else:
     BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# All app data should be stored next to the exe
+# Settings live next to the script/exe
+SETTINGS_PATH = os.path.join(BASE_DIR, "settings.json")
+
+# Cache directory for downloaded data (keeps memory low; reuse between runs)
 DATA_DIR = os.path.join(BASE_DIR, "arc_data")
-SETTINGS_PATH = os.path.join(DATA_DIR, "settings.json")
+HIDEOUT_DIR = os.path.join(DATA_DIR, "hideout")
+PROJECTS_PATH = os.path.join(DATA_DIR, "projects.json")
 
 PROJECTS_URL = "https://raw.githubusercontent.com/RaidTheory/arcraiders-data/main/projects.json"
-PROJECTS_PATH = os.path.join(DATA_DIR, "projects.json")
 HIDEOUT_FILES = (
     "equipment_bench",
     "explosives_bench",
@@ -71,39 +74,83 @@ NameToLines    = {}   # "Cat Bed" -> ["❌ Cat Bed", "• Scrappy 4 – ×1", ""
 ModulesMeta    = []   # [{"name": <str>, "maxLevel": <int>}]
 ProjectsMeta   = []   # [{"name": <str>, "maxStage": <int>}]
 Settings       = {"workstations": {}, "projects": {}}
-ModulesData    = []   # cached hideout modules downloaded at startup
 
 # ------------------ Utilities ------------------
 def ensure_dir():
-    os.makedirs(DATA_DIR, exist_ok=True)
+    # Ensure the directory for settings exists (usually the base dir).
+    settings_dir = os.path.dirname(SETTINGS_PATH)
+    if settings_dir:
+        os.makedirs(settings_dir, exist_ok=True)
 
-def download(url, path):
-    r = requests.get(url, timeout=30)
-    r.raise_for_status()
-    with open(path, "wb") as f:
-        f.write(r.content)
+def ensure_data_dirs():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(HIDEOUT_DIR, exist_ok=True)
 
 def refresh_data_startup():
-    """Always refresh both JSONs at app startup."""
-    ensure_dir()
-    refresh_modules_data()
-    download(PROJECTS_URL, PROJECTS_PATH)
+    """
+    Download JSONs on first need, cache to disk, load into memory for indexing,
+    then let callers drop references to keep RAM low.
+    """
+    ensure_data_dirs()
+    modules = ensure_hideout_cached()
+    projects = ensure_projects_cached()
+    return modules, projects
 
-def refresh_modules_data():
-    """Download all hideout modules (one JSON per module) and cache them."""
-    global ModulesData
-    ModulesData = download_split_hideout_modules()
+def ensure_projects_cached():
+    if not os.path.exists(PROJECTS_PATH):
+        download_projects_json(save_to_disk=True)
+    try:
+        return load_json(PROJECTS_PATH)
+    except Exception:
+        # If cache is corrupt, re-download.
+        download_projects_json(save_to_disk=True)
+        return load_json(PROJECTS_PATH)
 
-def download_split_hideout_modules():
+def ensure_hideout_cached():
     modules = []
+    missing = []
+    for name in HIDEOUT_FILES:
+        path = os.path.join(HIDEOUT_DIR, f"{name}.json")
+        if os.path.exists(path):
+            try:
+                modules.append(load_json(path))
+                continue
+            except Exception:
+                missing.append(name)
+        else:
+            missing.append(name)
+
+    if missing:
+        download_split_hideout_modules(save_to_disk=True)
+        modules = [load_json(os.path.join(HIDEOUT_DIR, f"{name}.json")) for name in HIDEOUT_FILES]
+    return modules
+
+def download_projects_json(save_to_disk=False):
+    resp = requests.get(PROJECTS_URL, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+    if not isinstance(data, list):
+        raise RuntimeError("projects.json is not a list")
+    if save_to_disk:
+        save_json(PROJECTS_PATH, data)
+    return data
+
+def download_split_hideout_modules(save_to_disk=False):
+    modules = []
+    errors = []
     for name in HIDEOUT_FILES:
         url = f"{HIDEOUT_RAW_BASE}/{name}.json"
-        resp = requests.get(url, timeout=30)
-        resp.raise_for_status()
         try:
-            modules.append(resp.json())
+            resp = requests.get(url, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+            if save_to_disk:
+                save_json(os.path.join(HIDEOUT_DIR, f"{name}.json"), data)
+            modules.append(data)
         except Exception as e:
-            raise RuntimeError(f"Failed to parse hideout module {name}.json") from e
+            errors.append(f"{name}.json ({e})")
+    if errors:
+        raise RuntimeError("Failed to download modules: " + ", ".join(errors))
     if not modules:
         raise RuntimeError("No hideout module files were downloaded.")
     return modules
@@ -113,7 +160,10 @@ def load_json(path):
         return json.load(f)
 
 def save_json(path, obj):
-    ensure_dir()
+    # Ensure target directory exists
+    dirpath = os.path.dirname(path)
+    if dirpath:
+        os.makedirs(dirpath, exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(obj, f, ensure_ascii=False, indent=2)
@@ -161,16 +211,13 @@ def save_settings():
     save_json(SETTINGS_PATH, Settings)
 
 # ------------------ Index build (applies Settings) ------------------
-def build_indexes_from_local():
+def build_indexes_from_local(modules, projects):
     global ItemIdToUsages, AllItemNames, NameToLines, ModulesMeta, ProjectsMeta
     ItemIdToUsages = {}
     AllItemNames = []
     NameToLines = {}
     ModulesMeta = []
     ProjectsMeta = []
-
-    modules = ModulesData if isinstance(ModulesData, list) else []
-    projects = load_json(PROJECTS_PATH)
 
     # Workstations
     if isinstance(modules, list):
@@ -453,14 +500,24 @@ class SettingsWin(tk.Toplevel):
     def _on_ws_changed(self, name, val):
         Settings["workstations"][name] = int(val)
         save_settings()
-        build_indexes_from_local()
-        self.master.on_type()
+        try:
+            modules, projects = refresh_data_startup()
+            build_indexes_from_local(modules, projects)
+            modules = projects = None
+            self.master.on_type()
+        except Exception as e:
+            messagebox.showerror("Refresh error", f"Could not refresh data:\n{e}")
 
     def _on_phase_changed(self, _label, val):
         Settings["projects"][EXPEDITION_PROJECT_KEY] = int(val)
         save_settings()
-        build_indexes_from_local()
-        self.master.on_type()
+        try:
+            modules, projects = refresh_data_startup()
+            build_indexes_from_local(modules, projects)
+            modules = projects = None
+            self.master.on_type()
+        except Exception as e:
+            messagebox.showerror("Refresh error", f"Could not refresh data:\n{e}")
 
 # ------------------ Foreground app diagnostics ------------------
 def maybe_show(ui: SearchUI):
@@ -521,7 +578,7 @@ def hotkey_loop(ui: SearchUI):
 def main():
     # Always refresh JSON on startup (live content), then offline
     try:
-        refresh_data_startup()
+        modules, projects = refresh_data_startup()
     except Exception as e:
         tk.Tk().withdraw()
         messagebox.showerror("Startup error", f"Could not download data:\n{e}")
@@ -530,7 +587,9 @@ def main():
     load_settings()
 
     try:
-        build_indexes_from_local()
+        build_indexes_from_local(modules, projects)
+        modules = None
+        projects = None
     except Exception as e:
         tk.Tk().withdraw()
         messagebox.showerror("Index error", f"Failed to build indexes:\n{e}")
