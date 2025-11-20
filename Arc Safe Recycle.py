@@ -512,23 +512,22 @@ class SettingsWin(tk.Toplevel):
         nb = ttk.Notebook(root)
         nb.pack(fill="both", expand=True)
 
-        ws_tab = ttk.Frame(nb)
-        ph_tab = ttk.Frame(nb)
+        progress_tab = ttk.Frame(nb)
         quests_tab = ttk.Frame(nb)
-        nb.add(ws_tab, text="Workstations")
-        nb.add(ph_tab, text="Expedition")
+        nb.add(progress_tab, text="Progress")
         nb.add(quests_tab, text="Quests")
 
-        # --- Workstations ---
-        ttk.Label(ws_tab, text="Workstations", font=("Segoe UI", 11, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 6))
-        self.ws_frame = ttk.Frame(ws_tab)
+        # --- Workstations + Expedition together ---
+        ttk.Label(progress_tab, text="Workstations", font=("Segoe UI", 11, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 6))
+        self.ws_frame = ttk.Frame(progress_tab)
         self.ws_frame.grid(row=1, column=0, sticky="ew")
         self._build_ws_rows()
 
-        # --- Expedition Phase (spinner with arrows) ---
-        ttk.Label(ph_tab, text="Expedition – Phase", font=("Segoe UI", 11, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 6))
-        self.pr_frame = ttk.Frame(ph_tab)
-        self.pr_frame.grid(row=1, column=0, sticky="ew")
+        ttk.Separator(progress_tab, orient="horizontal").grid(row=2, column=0, sticky="ew", pady=10)
+
+        ttk.Label(progress_tab, text="Expedition – Phase", font=("Segoe UI", 11, "bold")).grid(row=3, column=0, sticky="w", pady=(0, 6))
+        self.pr_frame = ttk.Frame(progress_tab)
+        self.pr_frame.grid(row=4, column=0, sticky="ew")
         self._build_phase_row()
 
         # --- Quests ---
