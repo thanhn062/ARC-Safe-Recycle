@@ -55,3 +55,15 @@ RaidTheory – for maintaining the public ARC Raiders JSON data
 🔗 https://github.com/RaidTheory
 
 ChatGPT (OpenAI) – for helping vibe-code this little project
+
+---
+
+## 🛠️ Build It Yourself (PyInstaller)
+
+From the repo root, you can create a one-file, windowed build with:
+
+```
+pyinstaller -F -w -n "ARC Safe Recycle" "Arc Safe Recycle.py"
+```
+
+The built exe will be in `dist/ARC Safe Recycle/` (or `dist/ARC Safe Recycle.exe` for one-file mode).
