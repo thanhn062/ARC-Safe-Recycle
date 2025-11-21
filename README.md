@@ -50,7 +50,6 @@ Just drop the `.exe` anywhere and run — no setup, no dependencies.
 ## 🪶 Notes & Known Quirks
 
 - On first use, the search window might not auto-focus — just click it once.  
-- Occasionally the app won’t close cleanly; if that happens, end it via **Task Manager**.  
 - Since the `.exe` isn’t signed, Windows might show a warning. It’s safe — or you can compile it yourself.
 
 ---
