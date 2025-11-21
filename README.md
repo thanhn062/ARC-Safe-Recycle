@@ -27,9 +27,7 @@ It filters out items you already no longer need.
 
 ## 🚧 What’s New
 
-- Auto-refreshes item data on startup so the list stays current with RaidTheory.
-- Search results now respect your workstation level/expedition phase from the Settings screen.
-- Added the one-liner PyInstaller build command below for DIY builds.
+- Search results now include Quest item requirements and Quest filtering
 
 ---
 
