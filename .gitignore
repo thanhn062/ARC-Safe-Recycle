@@ -1,3 +1,6 @@
 arc_data/
 arcraiders-data/
 settings.json
+ARC_Safe_Recycle.spec
+build/
+dist/
